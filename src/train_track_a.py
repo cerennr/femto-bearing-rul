@@ -60,7 +60,7 @@ def get_test_prediction(model, prep, test_df: pd.DataFrame) -> dict:
 
 def apply_standard_rul(df: pd.DataFrame, max_rul: float = 125.0) -> pd.DataFrame:
     """Standardizes piecewise linear RUL to a global cap, fixing massive MSE issues on healthy phase."""
-    total_life = df.groupby('bearing').apply(lambda g: (g['time_s'] + g['rul_s']).max())
+    total_life = df.groupby('bearing').apply(lambda g: (g['time_s'] + g['rul_s']).max(), include_groups=False)
     total_map = df['bearing'].map(total_life)
     df['rul_min'] = np.clip((total_map - df['time_s']) / 60.0, 0, max_rul)
     return df
@@ -97,7 +97,7 @@ def main():
 
     # ── 2. Preprocessing ─────────────────────────────────────────────────────
     print("\n[2/4] Preprocessing...")
-    prep = Preprocessor(n_features=30, use_pca=False)
+    prep = Preprocessor(n_features=25, use_pca=False)
     X_train, y_train = prep.fit_transform(train_df)
     X_val,   y_val   = prep.transform(val_df)
     prep.save(MODELS_DIR / "preprocessor.pkl")

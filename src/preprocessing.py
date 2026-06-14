@@ -34,9 +34,12 @@ TARGET_COL     = "rul_min"
 # NOT: time_s ve condition ARTIK öznitelik olarak kullanılıyor
 #   time_s   → normalize edilmiş biçimde (time_s_norm) ekleniyor
 #   condition → sayısal operasyon koşulu (1/2/3)
+# KRİTİK: deg_progress = (time_s - t_star_s) / cap_s olarak hesaplanır.
+#   t_star_s ve cap_s, CUSUM ile tüm ömür bittikten sonra bilinen değerlerdir.
+#   Bu yüzden deg_progress modele VERİLMEZ — hedef sızıntısı (target leakage) yapar.
 META_COLS = {
     "bearing", "window_idx", "time_s", "rul_s", "rul_min",
-    "t_star_s", "cap_s", "split"
+    "t_star_s", "cap_s", "split", "deg_progress"
 }
 
 
@@ -87,22 +90,17 @@ def smooth_and_baseline_correct(
     corrected = df_out.groupby('bearing')[feat_cols].transform(subtract_baseline)
     df_out[feat_cols] = corrected
 
-    # 3. Degradasyon ilerleme indeksi (time_s_norm'un YERINI ALIYOR)
-    #    deg_progress = (time_s - t_star_s) / cap_s  ∈ [0, 1]
-    #    0 = degradasyon baslangici, 1 = tahmin edilen omur sonu
-    #    Bu ozellik TOPLAM OMURDAN BAGIMSIZDIR — tum bearingler icin tutarli.
+    # 3. Sızıntısız Zaman İlerleme İndeksi
+    #    time_progress = time_s / max(time_s bu bearing'de)  ∈ [0, 1]
+    #    Sadece GÖZLEMLENMİŞ geçen süreyi kullanır.
+    #    Gerçek dünyada: rulman ne kadar süredir çalışıyor?
+    #    t_star_s veya cap_s KULLANILMAZ → sızıntı yok.
     if 'time_s_norm' in df_out.columns:
         df_out.drop(columns=['time_s_norm'], inplace=True, errors='ignore')
-    if 't_star_s' in df_out.columns and 'cap_s' in df_out.columns:
-        t_star = df_out['t_star_s']
-        cap    = df_out['cap_s'].replace(0, 1.0)   # sifir bolme onlemi
-        df_out['deg_progress'] = np.clip(
-            (df_out['time_s'] - t_star) / cap, 0.0, 1.0
-        )
-    else:
-        # Fallback: gozlem penceresi icinde normalize et (daha az ideal)
-        max_time = df_out.groupby('bearing')['time_s'].transform('max')
-        df_out['deg_progress'] = df_out['time_s'] / (max_time + 1e-6)
+    if 'deg_progress' in df_out.columns:
+        df_out.drop(columns=['deg_progress'], inplace=True, errors='ignore')
+    max_time = df_out.groupby('bearing')['time_s'].transform('max')
+    df_out['time_progress'] = df_out['time_s'] / (max_time + 1e-6)
 
     # 4. Per-bearing min-max normalization (opsiyonel — LSTM için kritik)
     if normalize_per_bearing:
