@@ -1,4 +1,4 @@
-ï»¿# === Python ===
+# === Python ===
 __pycache__/
 *.py[cod]
 *.pyo
@@ -20,13 +20,13 @@ ENV/
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
-# === Ham ve Ä°ÅŸlenmiÅŸ Veri ===
+# === Ham ve Ýþlenmiþ Veri ===
 data/raw/
 data/processed/
 
-# === EÄŸitilmiÅŸ Modeller ve Ara Dosyalar ===
+# === Eðitilmiþ Modeller ve Ara Dosyalar ===
 experiments/models/
-experiments/numpy_data/
+data/numpy_data/
 
 # === IDE / Editor ===
 .vscode/
@@ -44,6 +44,6 @@ desktop.ini
 *.log
 logs/
 
-# === GeÃ§ici dosyalar ===
+# === Geçici dosyalar ===
 *.tmp
 *.bak
