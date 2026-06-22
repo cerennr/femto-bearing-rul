@@ -23,24 +23,20 @@ from sklearn.preprocessing import RobustScaler
 from sklearn.decomposition import PCA
 from sklearn.feature_selection import mutual_info_regression
 
+from config import (
+    STD_THRESHOLD, CORR_THRESHOLD, N_FEATURES,
+    EMA_SPAN, BASELINE_P, TREND_PERIODS,
+    USE_TIME_PROGRESS, META_COLS,
+)
 
 # ── Sabitler ──────────────────────────────────────────────────────────────────
-STD_THRESHOLD  = 0.01   # Bu std'nin altındaki öznitelikler sabit sayılır → at
-CORR_THRESHOLD = 0.95   # Bu korelasyonun üstündeki çiftler redundant → birini at
-N_FEATURES     = 25     # MI'ya göre seçilecek öznitelik sayısı
-TARGET_COL     = "rul_min"
+TARGET_COL = "rul_min"
 
-# Meta sütunlar — bunlar hiçbir zaman öznitelik değil
-# NOT: time_s ve condition ARTIK öznitelik olarak kullanılıyor
-#   time_s   → normalize edilmiş biçimde (time_s_norm) ekleniyor
-#   condition → sayısal operasyon koşulu (1/2/3)
-# KRİTİK: deg_progress = (time_s - t_star_s) / cap_s olarak hesaplanır.
-#   t_star_s ve cap_s, CUSUM ile tüm ömür bittikten sonra bilinen değerlerdir.
-#   Bu yüzden deg_progress modele VERİLMEZ — hedef sızıntısı (target leakage) yapar.
-META_COLS = {
-    "bearing", "window_idx", "time_s", "rul_s", "rul_min",
-    "t_star_s", "cap_s", "split", "deg_progress"
-}
+# Meta sütunlar = config.META_COLS (tek kaynak). İçerir:
+#   deg_progress  → (time_s-t_star_s)/cap_s : hedef sızıntısı, ASLA öznitelik değil
+#   time_s_norm   → eski sızıntı kalıntısı
+#   condition     → koşul (1/2/3); dürüst pipeline'da öznitelik DEĞİL (deney tutarlılığı)
+# time_progress META'da DEĞİL: USE_TIME_PROGRESS=True ise öznitelik olur (varsayılan kapalı).
 
 
 def get_feature_cols(df: pd.DataFrame) -> list:
@@ -90,17 +86,17 @@ def smooth_and_baseline_correct(
     corrected = df_out.groupby('bearing')[feat_cols].transform(subtract_baseline)
     df_out[feat_cols] = corrected
 
-    # 3. Sızıntısız Zaman İlerleme İndeksi
-    #    time_progress = time_s / max(time_s bu bearing'de)  ∈ [0, 1]
-    #    Sadece GÖZLEMLENMİŞ geçen süreyi kullanır.
-    #    Gerçek dünyada: rulman ne kadar süredir çalışıyor?
-    #    t_star_s veya cap_s KULLANILMAZ → sızıntı yok.
-    if 'time_s_norm' in df_out.columns:
-        df_out.drop(columns=['time_s_norm'], inplace=True, errors='ignore')
-    if 'deg_progress' in df_out.columns:
-        df_out.drop(columns=['deg_progress'], inplace=True, errors='ignore')
-    max_time = df_out.groupby('bearing')['time_s'].transform('max')
-    df_out['time_progress'] = df_out['time_s'] / (max_time + 1e-6)
+    # 3. time_progress = time_s / max(time_s)  ∈ [0, 1]
+    #    DİKKAT (dürüstlük): test'te son pencerede DAİMA 1.0 olur (max = son an).
+    #    Eğitimde tp≈1 ↔ RUL≈0 → model "tp=1 → düşük RUL" öğrenir, tüm test
+    #    yataklarına düşük RUL atar; PHM şişer ama yatak-içi korelasyon NEGATİFE döner.
+    #    Bu yüzden USE_TIME_PROGRESS=False (config). True yaparsan eski (şişik) davranış.
+    df_out.drop(columns=['time_s_norm', 'deg_progress'], inplace=True, errors='ignore')
+    if USE_TIME_PROGRESS:
+        max_time = df_out.groupby('bearing')['time_s'].transform('max')
+        df_out['time_progress'] = df_out['time_s'] / (max_time + 1e-6)
+    else:
+        df_out.drop(columns=['time_progress'], inplace=True, errors='ignore')
 
     # 4. Per-bearing min-max normalization (opsiyonel — LSTM için kritik)
     if normalize_per_bearing:

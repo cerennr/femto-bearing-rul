@@ -1,181 +1,104 @@
 """
-train_track_a.py
-----------------
-Track A: Random Forest ve XGBoost modellerini eğitir ve değerlendirir.
-(SVR, hedef değişkenin devasa ölçeği nedeniyle iptal edildi.)
+train_track_a.py  (DÜRÜST sürüm)
+--------------------------------
+Track A: Random Forest + XGBoost, geleneksel ML.
+Ortak metodoloji (Track B ile aynı, adil kıyas):
+  - Hedef = HI (bozulma fraksiyonu), mutlak RUL değil
+  - time_progress YOK, sağlıklı-faz filtresi varsayılan KAPALI (config flag)
+  - Final model 6 öğrenme yatağıyla eğitilir
+  - Okuma: HI → fraksiyon RUL + LOBO ile seçilen gamma
+  - Değerlendirme: PHM + endpoint_r + yatak-içi traj_r + LOBO HI_traj_r + MAE
 
-Çalıştırma:
-    cd femto_rul/src
-    python train_track_a.py
-
-Çıktılar (experiments/ altında):
-    models/preprocessor.pkl        → kaydedilmiş preprocessing pipeline
-    models/Random_Forest.pkl       → eğitilmiş RF modeli
-    models/XGBoost.pkl             → eğitilmiş XGBoost modeli
-    results/track_a_results.csv    → tüm modellerin metrik tablosu
-    results/track_a_comparison.png → karşılaştırma grafiği
-    results/track_a_phm_score.png  → PHM score grafiği
+Çalıştırma:  cd src && python train_track_a.py
 """
-
-import sys
+import sys, warnings
 import numpy as np
 import pandas as pd
 from pathlib import Path
-
 sys.path.insert(0, str(Path(__file__).parent))
+warnings.filterwarnings("ignore")
 
-from data_utils    import train_val_split, get_feature_cols
+from config import (FEATURES_TRAIN, FEATURES_TEST, LEARNING_BEARINGS,
+                    RESULTS_DIR, MODELS_DIR, USE_HEALTHY_FILTER,
+                    DEGRAD_THRESH_FRAC, RUL_CAP_MIN)
 from preprocessing import Preprocessor
-from models        import RandomForestModel, XGBoostModel
-from evaluation    import (
-    evaluate_val, evaluate_test_bearings,
-    plot_predictions, plot_model_comparison,
-    plot_phm_scoring_function,
-)
-from config import FEATURES_TRAIN, FEATURES_TEST
-
-_HERE       = Path(__file__).resolve().parent          # .../femto_rul/src
-_PROJECT    = _HERE.parent                             # .../femto_rul
-MODELS_DIR  = _PROJECT / "experiments" / "models"
-RESULTS_DIR = _PROJECT / "experiments" / "results"
-MODELS_DIR.mkdir(parents=True, exist_ok=True)
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+from models import RandomForestModel, XGBoostModel
+from hi_labeling import (add_hi_label, actual_rul_min, rul_from_hi, smooth_hi,
+                         phm_from_pairs, endpoint_corr, traj_corr,
+                         lobo_gamma_records, pick_best_gamma)
 
 
-def get_test_prediction(model, prep, test_df: pd.DataFrame) -> dict:
-    """
-    Her test bearing'i için son penceredeki RUL tahminini döndürür.
-    Test bearing'lerin verisi kesilmiş — son pencere mevcut anı temsil eder.
-    Oradan tahmin edilen RUL = kalan ömür tahmini.
-    """
-    predictions = {}
-    for bname in test_df["bearing"].unique():
-        bdf   = test_df[test_df["bearing"] == bname].sort_values("time_s")
-        X_b, _ = prep.transform(bdf)
-        # Son pencerenin tahmini
-        pred = model.predict(X_b[-1:])
-        predictions[bname] = float(pred[0])
-    return predictions
+def fit_prep_model(train_df, model_factory, n_features=25):
+    """train_df üzerinde prep(HI hedefli) + model fit eder."""
+    prep = Preprocessor(n_features=n_features, use_pca=False, target_col="hi")
+    X, y = prep.fit_transform(train_df.copy())
+    model = model_factory()
+    model.fit(X, y)
+    return prep, model
 
+def predict_hi_bearing(prep, model, bdf):
+    """Bir yatağın tüm pencereleri için tahmin HI (sıralı)."""
+    bdf = bdf.sort_values("time_s")
+    X, _ = prep.transform(bdf.copy())
+    return np.clip(model.predict(X), 0, 1)
 
-def apply_standard_rul(df: pd.DataFrame, max_rul: float = 125.0) -> pd.DataFrame:
-    """Standardizes piecewise linear RUL to a global cap, fixing massive MSE issues on healthy phase."""
-    total_life = df.groupby('bearing').apply(lambda g: (g['time_s'] + g['rul_s']).max(), include_groups=False)
-    total_map = df['bearing'].map(total_life)
-    df['rul_min'] = np.clip((total_map - df['time_s']) / 60.0, 0, max_rul)
-    return df
 
 def main():
-    print("\n" + "=" * 60)
-    print("  FEMTO PHM — Track A Eğitimi")
-    print("=" * 60)
+    print("\n" + "=" * 60 + "\n  TRACK A — Dürüst (HI + fraksiyon + LOBO-gamma)\n" + "=" * 60)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True); MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── 1. Veri Yükle ────────────────────────────────────────────────────────
-    print("\n[1/4] Veri yükleniyor...")
-    df_train_full = pd.read_csv(FEATURES_TRAIN)
-    df_test       = pd.read_csv(FEATURES_TEST)
-    
-    # Standart RUL hedeflerini uygula (hepsi için max 125 dk sabit)
-    df_train_full = apply_standard_rul(df_train_full)
-    df_test       = apply_standard_rul(df_test)
-    
-    train_df, val_df = train_val_split(df_train_full)
-    print(f"  Train: {len(train_df)} | Val: {len(val_df)} | Test: {len(df_test)}")
+    tr = add_hi_label(pd.read_csv(FEATURES_TRAIN))
+    te = add_hi_label(pd.read_csv(FEATURES_TEST))
+    if USE_HEALTHY_FILTER:
+        thr = RUL_CAP_MIN * DEGRAD_THRESH_FRAC
+        keep = []
+        for b, g in tr.groupby("bearing"):
+            total = (g["time_s"] + g["rul_s"]).max()
+            rmin = np.clip((total - g["time_s"]) / 60.0, 0, RUL_CAP_MIN)
+            keep.append(g[rmin < thr])
+        tr = pd.concat(keep)
+        print(f"  [Filtre] açık → {len(tr)} pencere")
 
-    # ── Degradasyon Filtresi ──────────────────────────────────────────────────
-    # Saglikli faz (RUL = 125 dk tavaninda) feature uzayinda sifir civarinda
-    # yuzer; model bu duzlugu ogrenmeye calisirken kaybolur.
-    # Sadece bozunum baslangici sonrasindaki pencereleri kullan.
-    RUL_CAP = 125.0
-    DEGRAD_THRESH = RUL_CAP * 0.98   # 122.5 dk altindaki pencereler = bozunum
-    n_train_all = len(train_df)
-    n_val_all   = len(val_df)
-    train_df = train_df[train_df['rul_min'] < DEGRAD_THRESH].reset_index(drop=True)
-    val_df   = val_df[val_df['rul_min'] < DEGRAD_THRESH].reset_index(drop=True)
-    print(f"  [Filtre] Train: {n_train_all} -> {len(train_df)} | Val: {n_val_all} -> {len(val_df)}")
-    print(f"           (Saglikli faz pencereleri ci karildi)")
+    factories = {
+        "Random Forest": lambda: RandomForestModel(n_estimators=300, min_samples_leaf=5),
+        "XGBoost":       lambda: XGBoostModel(n_estimators=400, learning_rate=0.02, max_depth=6),
+    }
 
-    # ── 2. Preprocessing ─────────────────────────────────────────────────────
-    print("\n[2/4] Preprocessing...")
-    prep = Preprocessor(n_features=25, use_pca=False)
-    X_train, y_train = prep.fit_transform(train_df)
-    X_val,   y_val   = prep.transform(val_df)
-    prep.save(MODELS_DIR / "preprocessor.pkl")
+    rows = []
+    for name, factory in factories.items():
+        print(f"\n  >>> {name}  (LOBO gamma seçimi...)")
+        recs = []
+        for bout in LEARNING_BEARINGS:
+            prep_f, mdl_f = fit_prep_model(tr[tr.bearing != bout], factory)
+            g = tr[tr.bearing == bout].sort_values("time_s")
+            hi_pred = predict_hi_bearing(prep_f, mdl_f, g)
+            recs.append(lobo_gamma_records(hi_pred, g["time_s"].values,
+                                           g["rul_s"].values, g["t_star_s"].iloc[0]))
+        gstar = pick_best_gamma(recs)
 
-    fi_df = prep.get_feature_importance_df()
-    fi_df.to_csv(RESULTS_DIR / "feature_importance.csv", index=False)
-    print(f"\n  Seçilen öznitelikler: {prep.selected_features}")
+        prep, model = fit_prep_model(tr, factory)
+        model.save(MODELS_DIR / f"{name.replace(' ','_')}.pkl")
 
-    # ── 3. Model Eğitimi ─────────────────────────────────────────────────────
-    print("\n[3/4] Modeller eğitiliyor...")
+        acts, preds, tjs = [], [], []
+        for b, g in te.groupby("bearing"):
+            g = g.sort_values("time_s")
+            hi_pred = predict_hi_bearing(prep, model, g)
+            preds.append(rul_from_hi(hi_pred, g["time_s"].values, g["t_star_s"].iloc[0], gstar))
+            acts.append(actual_rul_min(g))
+            tjs.append(traj_corr(g["hi"].values, smooth_hi(hi_pred, gstar)))
+        acts, preds = np.array(acts), np.array(preds)
+        phm = phm_from_pairs(acts, preds); r = endpoint_corr(acts, preds)
+        mae = float(np.mean(np.abs(acts - preds)))
+        rmse = float(np.sqrt(np.mean((acts - preds) ** 2))); tjr = float(np.nanmean(tjs))
+        print(f"      gamma*={gstar}  PHM={phm:.4f}  endpoint_r={r:+.3f}  RMSE={rmse:.1f}  MAE={mae:.1f}  traj_r={tjr:+.3f}")
+        rows.append(dict(model=name, gamma=gstar, phm=round(phm, 4), endpoint_r=round(r, 3),
+                         rmse=round(rmse, 1), mae=round(mae, 1), traj_r=round(tjr, 3)))
 
-    models = [
-        RandomForestModel(n_estimators=300, min_samples_leaf=5),
-        # Early stopping kaldirildi: filtreli-train vs filtreli/filtrelenmemis-val
-        # hedef dagilimi uyumsuzlugu yuzunden XGBoost iter=3-35'de duruyordu.
-        # Sabit 400 tur + dusuk lr cok daha kararli sonuc verir.
-        XGBoostModel(n_estimators=400, learning_rate=0.02, max_depth=6),
-    ]
-
-    all_val_results  = []
-    all_test_results = []
-
-    for model in models:
-        print(f"\n  -> {model.name}")
-
-        # Egit — XGBoost icin early stopping YOK (sabit tur)
-        model.fit(X_train, y_train)
-
-        # Validation değerlendirme
-        y_val_pred = model.predict(X_val)
-        metrics    = evaluate_val(y_val, y_val_pred,
-                                  model_name=model.name, verbose=True)
-        all_val_results.append(metrics)
-
-        # Val tahmin grafiği
-        safe_name = model.name.replace(" ", "_").replace("(", "").replace(")", "")
-        plot_predictions(
-            y_val, y_val_pred,
-            model_name=model.name,
-            save_path=RESULTS_DIR / f"val_pred_{safe_name}.png"
-        )
-
-        # Test bearing tahmini (son pencere)
-        test_preds = get_test_prediction(model, prep, df_test)
-        phm_result = evaluate_test_bearings(test_preds, unit="min")
-        all_test_results.append({
-            "model":     model.name,
-            "phm_score": phm_result["score"],
-        })
-
-        # Modeli kaydet
-        model.save(MODELS_DIR / f"{safe_name}.pkl")
-
-    # ── 4. Karşılaştırma ─────────────────────────────────────────────────────
-    print("\n[4/4] Sonuçlar kaydediliyor...")
-
-    val_df_res  = pd.DataFrame(all_val_results)
-    test_df_res = pd.DataFrame(all_test_results)
-    results_df  = val_df_res.merge(test_df_res, on="model")
-    results_df.to_csv(RESULTS_DIR / "track_a_results.csv", index=False)
-
-    print("\n" + "=" * 60)
-    print("  TRACK A — SONUÇLAR")
-    print("=" * 60)
-    print(results_df.to_string(index=False))
-
-    plot_model_comparison(
-        results_df,
-        save_path=RESULTS_DIR / "track_a_comparison.png"
-    )
-
-    # PHM scoring fonksiyon grafiği (tez için)
-    plot_phm_scoring_function(
-        save_path=RESULTS_DIR / "phm_scoring_function.png"
-    )
-
-    print(f"\n  Tüm çıktılar: {RESULTS_DIR.resolve()}")
-    print("  Track A tamamlandı!")
+    res = pd.DataFrame(rows)
+    res.to_csv(RESULTS_DIR / "track_a_results.csv", index=False)
+    print("\n" + "=" * 60 + "\n  TRACK A SONUÇLARI\n" + "=" * 60)
+    print(res.to_string(index=False))
+    print(f"\n  Kaydedildi: {RESULTS_DIR / 'track_a_results.csv'}")
 
 
 if __name__ == "__main__":

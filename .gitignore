@@ -47,3 +47,8 @@ logs/
 # === Geçici dosyalar ===
 *.tmp
 *.bak
+
+# === Model Weights ve Tahmin Dizileri ===
+*.keras
+*.npz
+
