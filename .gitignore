@@ -52,3 +52,8 @@ logs/
 *.keras
 *.npz
 
+
+# === Internal Markdown ===
+PROJE_DURUMU.md
+TEZ_TASLAK.md
+
