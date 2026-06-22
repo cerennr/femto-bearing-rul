@@ -57,12 +57,34 @@ notebooks/          görselleştirme
 
 ## Çalıştırma
 
+Projeyi çalıştırmak için aşağıdaki adımları sırasıyla izleyin:
+
 ```bash
+# 1. Repoyu klonlayın ve dizine girin
+git clone https://github.com/cerennr/femto-bearing-rul.git
+cd femto-bearing-rul
+
+# 2. Python sanal ortamı (virtual environment) oluşturun ve aktifleştirin
+python -m venv venv
+source venv/bin/activate  # Windows için: venv\Scripts\activate
+
+# 3. Gerekli kütüphaneleri kurun
 pip install -r requirements.txt
-python src/data_utils.py       # ham veri (data/raw) → öznitelik CSV
-python src/train_track_a.py    # Track A 
-python src/train_track_b.py    # Track B 
-```
+
+# 4. Veri Seti Hazırlığı (Kaggle)
+Özellik çıkarımı ve model eğitimi yapabilmek için ham veri setine ve numpy dizilerine ihtiyacınız vardır. Veri boyutu büyük olduğu için GitHub'da yer almamaktadır.
+
+Projenin veri setini [Kaggle Linki Buraya Gelecek] adresinden indirin.
+İndirdiğiniz arşiv dosyasının içindeki raw/ ve numpy_data/ klasörlerini, projenin kök dizinindeki data/ klasörünün içine yerleştirin.
+bash
+
+
+# 5. Öznitelik Çıkarımı (Feature Extraction)
+# Ham verilerden (data/raw/) 54 farklı özelliği çıkarıp processed klasörüne CSV olarak kaydeder.
+python src/data_utils.py
+# 6. Modellerin Eğitimi ve Değerlendirilmesi
+python src/train_track_a.py    # ML modelleri 
+python src/train_track_b.py    # DL modelleri 
 
 ## Veri
 
