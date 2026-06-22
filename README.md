@@ -1,17 +1,13 @@
 # FEMTO RUL — Rulman Kalan Faydalı Ömür Tahmini
 
 IEEE PHM 2012 (FEMTO-PRONOSTIA) titreşim veri setinde rulman **Kalan Faydalı Ömür (RUL)** tahmini.
-Geleneksel makine öğrenmesi (Track A) ile derin öğrenme (Track B) yöntemleri, **veri sızıntısından
-arındırılmış** ve **görülmemiş rulmana genelleme (LOBO)** ile doğrulanmış dürüst bir kurguda karşılaştırılır.
+Geleneksel makine öğrenmesi (Track A) ile derin öğrenme (Track B) yöntemleri, **11 test rulman** üzerinden karşılaştırılır.
 
 ## Yaklaşım
 
-- **Hedef = Sağlık Göstergesi (HI):** doğrudan mutlak RUL yerine `HI = clip((t − t*) / cap, 0, 1)`
-  (sağlıklı = 0, arıza = 1). t* (bozulma başlangıcı) CUSUM ile bulunur. Tek anlık pencereden mutlak
-  RUL tahmini kötü-kurulu (ill-posed) olduğu için HI tercih edilir.
-- **HI → RUL:** fraksiyon yöntemi + LOBO ile seçilen γ kalibrasyonu (test'e bakılmadan).
-- **Sızıntı temizliği:** `time_progress`, normalize-ömür, `cap` gibi test'te bilinmeyen/dejenere
-  öznitelikler dışlandı.
+- **Hedef = Sağlık Göstergesi (HI):** `HI = clip((t − t*) / cap, 0, 1)`
+  (sağlıklı = 0, arıza = 1). t* (bozulma başlangıcı) CUSUM ile bulunur. 
+- **HI → RUL:** fraksiyon yöntemi + LOBO (leave one bearing out)  ile seçilen γ kalibrasyonu yapıldı.
 - **Değerlendirme:** PHM 2012 skoru + MAE/RMSE + korelasyon (endpoint_r, traj_r) + **LOBO** (6-fold).
 
 ## Sonuçlar (11 test rulmanı)
