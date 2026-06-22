@@ -16,8 +16,8 @@ Geleneksel makine öğrenmesi (Track A) ile derin öğrenme (Track B) yöntemler
 |---|---|---:|---:|---:|---:|
 | Random Forest | tek-pencere öznitelik | 0.152 | 40.5 | +0.16 | — |
 | XGBoost | tek-pencere öznitelik | 0.186 | 44.5 | −0.07 | — |
-| **GRU** | öznitelik dizisi (W=24) | **0.230** | **~31** | **+0.59** | **0.61** |
-| TCN | öznitelik dizisi (W=24) | 0.185 | ~52 | +0.50 | 0.30 |
+| **GRU** | öznitelik dizisi (24 pencere) | **0.230** | **~31** | **+0.59** | **0.61** |
+| TCN | öznitelik dizisi (24 pencere) | 0.185 | ~52 | +0.50 | 0.30 |
 | raw-TCN | ham sinyal (2560×2) | 0.131 | 54.3 | −0.05 | 0.60 |
 
 > DL skorları 5-seed ensemble. GRU PHM seed varyansı: **0.200 ± 0.029**. 
@@ -48,11 +48,11 @@ src/
   models.py         Random Forest, XGBoost
   dl_models.py      GRU, TCN, raw-TCN
   evaluation.py     metrikler ve grafikler
-  train_track_a.py  Track A (RF + XGBoost) — lokal
-  train_track_b.py  Track B (GRU + TCN + raw-TCN) — Colab + GPU
+  train_track_a.py  Track A (RF + XGBoost) 
+  train_track_b.py  Track B (GRU + TCN + raw-TCN)
 data/{raw, numpy_data, processed}
 experiments/{models, results}
-notebooks/          görselleştirme (tez_gorseller.ipynb)
+notebooks/          görselleştirme 
 ```
 
 ## Çalıştırma
@@ -60,8 +60,8 @@ notebooks/          görselleştirme (tez_gorseller.ipynb)
 ```bash
 pip install -r requirements.txt
 python src/data_utils.py       # ham veri (data/raw) → öznitelik CSV
-python src/train_track_a.py    # Track A (lokal)
-python src/train_track_b.py    # Track B (Colab + GPU önerilir)
+python src/train_track_a.py    # Track A 
+python src/train_track_b.py    # Track B 
 ```
 
 ## Veri
