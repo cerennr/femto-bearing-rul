@@ -1,15 +1,20 @@
 """
-train_track_b.py  (Colab + GPU)
--------------------------------
+train_track_b.py
+----------------
 Track B: GRU + TCN (öznitelik dizisi) + raw-TCN (ham sinyal). Hedef = HI.
 Track A ile AYNI değerlendirme: PHM + endpoint_r + traj_r + LOBO HI_traj_r.
 
+TEK KOŞUDA TÜM ÇIKTILARI üretir (ek manuel adım / Drive kurulumu yok):
+  - experiments/models/{GRU,TCN}_seed*.keras + rawTCN_seed*.keras + feature_prep.pkl
+  - experiments/results/track_b_predictions.npz  (pencere-pencere HI; tez görselleri için)
+  - experiments/results/track_b_results.csv      (PHM/endpoint_r/traj_r/LOBO/MAE/RMSE)
+
 Akış (her model):
   1. LOBO (6 fold, 1 seed) ile gamma* seç + LOBO HI_traj_r ölç
-  2. 6 yatakla 5-seed ensemble eğit
+  2. 6 yatakla SEEDS ensemble eğit (model ağırlıkları kaydedilir)
   3. Test: HI tahmin → fraksiyon RUL (gamma*) → metrikler
 
-Çalıştırma (Colab): src'yi path'e ekle, GPU runtime, python train_track_b.py
+Çalıştırma: python src/train_track_b.py   (TensorFlow gerekir; GPU önerilir, CPU'da yavaş)
 """
 import os, sys, warnings
 import numpy as np
@@ -26,13 +31,18 @@ os.environ.setdefault("PYTHONHASHSEED", "0")
 # os.environ["TF_DETERMINISTIC_OPS"] = "1"; tf.config.experimental.enable_op_determinism()
 
 from config import (FEATURES_TRAIN, FEATURES_TEST, LEARNING_BEARINGS,
-                    VAL_BEARINGS, RESULTS_DIR, SEQ_LEN, SEEDS, RAW_SEEDS, EPOCHS, BATCH_SIZE)
+                    VAL_BEARINGS, RESULTS_DIR, MODELS_DIR, SEQ_LEN, SEEDS, RAW_SEEDS, EPOCHS, BATCH_SIZE)
 from preprocessing import Preprocessor
 from dl_models import build_gru, build_tcn, build_raw_tcn
 from sequence import build_feature_dataset, make_feature_sequences, load_raw_bearing
 from hi_labeling import (add_hi_label, actual_rul_min, rul_from_hi, smooth_hi,
                          phm_from_pairs, endpoint_corr, traj_corr,
                          lobo_gamma_records, pick_best_gamma)
+
+
+# Pencere-pencere HI tahminleri burada toplanır → track_b_predictions.npz
+# Anahtar formatı: "MODEL__BearingX_Y" (tez_gorseller.ipynb bunu okur).
+PREDICTIONS = {}
 
 
 def fit(build_fn, Xtr, ytr, Xv, yv, seed, epochs):
@@ -76,6 +86,12 @@ def run_feature_model(name, build_fn, tr, te):
     Xv, yv, _ = _seq_for(prep, tr[tr.bearing == VAL_BEARINGS[-1]])
     F = Xtr.shape[-1]
     models = [fit(lambda: build_fn(F), Xtr, ytr, Xv, yv, s, EPOCHS) for s in SEEDS]
+    # KAYDET: model ağırlıkları (seed başına) + öznitelik pipeline'ı (scaler+seçim)
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    for s, m in zip(SEEDS, models):
+        m.save(MODELS_DIR / f"{name}_seed{s}.keras")
+    prep.save(MODELS_DIR / "feature_prep.pkl")
+    print(f"  [save] {len(models)} {name} modeli + feature_prep → {MODELS_DIR}")
     return _eval(name, gstar, np.nanmean(lobo_tr),
                  lambda g: ensemble_predict(models, _seq_for(prep, g)[0]), te)
 
@@ -110,11 +126,17 @@ def run_raw_model(tr, te, meta):
     Xtr = np.concatenate([TR[b][0] for b in LEARNING_BEARINGS]); ytr = np.concatenate([TR[b][1] for b in LEARNING_BEARINGS])
     Xv, yv = TR[VAL_BEARINGS[-1]][0], TR[VAL_BEARINGS[-1]][1]
     models = [fit(build_raw_tcn, Xtr, ytr, Xv, yv, s, EPOCHS) for s in RAW_SEEDS]
+    # KAYDET: ham-TCN model ağırlıkları (seed başına)
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    for s, m in zip(RAW_SEEDS, models):
+        m.save(MODELS_DIR / f"rawTCN_seed{s}.keras")
+    print(f"  [save] {len(models)} raw-TCN modeli → {MODELS_DIR}")
     TE = {b: load_raw_bearing(b, True, meta) for b in te.bearing.unique()}
     acts, preds, tjs = [], [], []
     for b in te.bearing.unique():
         Xb, hi_true, times, ts, total = TE[b]
         hi = ensemble_predict(models, Xb)
+        PREDICTIONS[f"raw-TCN__{b}"] = np.asarray(hi, dtype=float)   # trajektori için
         preds.append(rul_from_hi(hi, times, ts, gstar)); acts.append(min(total/60 - times[-1]/60, 125.0))
         tjs.append(traj_corr(hi_true, smooth_hi(hi, gstar)))
     return _summary("raw-TCN", gstar, np.nanmean(lobo_tr), acts, preds, tjs)
@@ -132,6 +154,7 @@ def _eval(name, gstar, lobo_tr, predict_hi_fn, te):
     for b, g in te.groupby("bearing"):
         g = g.sort_values("time_s")
         hi = predict_hi_fn(g)
+        PREDICTIONS[f"{name}__{b}"] = np.asarray(hi, dtype=float)   # trajektori için
         preds.append(rul_from_hi(hi, g["time_s"].values, g["t_star_s"].iloc[0], gstar))
         acts.append(actual_rul_min(g)); tjs.append(traj_corr(g["hi"].values, smooth_hi(hi, gstar)))
     return _summary(name, gstar, lobo_tr, acts, preds, tjs)
@@ -151,6 +174,7 @@ def _summary(name, gstar, lobo_tr, acts, preds, tjs):
 
 def main():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
     tr = add_hi_label(pd.read_csv(FEATURES_TRAIN))
     te = add_hi_label(pd.read_csv(FEATURES_TEST))
     meta = pd.concat([tr, te])[["bearing", "window_idx", "time_s", "rul_s", "t_star_s", "cap_s"]]
@@ -160,8 +184,12 @@ def main():
     rows.append(run_raw_model(tr, te, meta))
     res = pd.DataFrame(rows)
     res.to_csv(RESULTS_DIR / "track_b_results.csv", index=False)
+    # KAYDET: pencere-pencere HI tahminleri (tez_gorseller.ipynb → DL trajektori görseli)
+    np.savez(RESULTS_DIR / "track_b_predictions.npz", **PREDICTIONS)
     print("\n" + "=" * 60 + "\n  TRACK B SONUÇLARI\n" + "=" * 60)
     print(res.to_string(index=False))
+    print(f"\n  Kaydedildi: track_b_results.csv + track_b_predictions.npz ({len(PREDICTIONS)} dizi)")
+    print(f"  Modeller: {MODELS_DIR}")
 
 
 if __name__ == "__main__":

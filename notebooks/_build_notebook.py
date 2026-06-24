@@ -345,26 +345,37 @@ DL modellerinin yatak-başına gerçek vs tahmin RUL'u (Track B Colab koşusunda
 ani-arıza rulmanlarını (1_6, 2_4) 125'e şişiriyor ama gerisinde makul; raw-TCN ise savruk
 (2_6/2_7→125, 1_7→~1) → mutlak RUL'u genelleyemiyor (RQ2).""")
 
-code('''# Track B yatak-başına gerçek/tahmin (Colab çıktısı, 2026-06-18)
-dl_order = ["1_3","1_4","1_5","1_6","1_7","2_3","2_4","2_5","2_6","2_7","3_3"]
-dl_act = {"1_3":95.7,"1_4":5.8,"1_5":27.0,"1_6":24.5,"1_7":125.0,"2_3":125.0,
-          "2_4":23.3,"2_5":51.7,"2_6":21.7,"2_7":9.8,"3_3":13.8}
-dl_pred = {
- "GRU":     {"1_3":125,"1_4":8.7,"1_5":12.2,"1_6":125,"1_7":125,"2_3":125,"2_4":125,"2_5":40.9,"2_6":45.6,"2_7":2.0,"3_3":6.3},
- "TCN":     {"1_3":125,"1_4":8.5,"1_5":51.3,"1_6":125,"1_7":125,"2_3":125,"2_4":125,"2_5":125,"2_6":54.8,"2_7":20.7,"3_3":7.5},
- "raw-TCN": {"1_3":20.1,"1_4":0.4,"1_5":10.1,"1_6":38.1,"1_7":1.4,"2_3":125,"2_4":125,"2_5":22.4,"2_6":125,"2_7":125,"3_3":0.9},
-}
-x = np.arange(len(dl_order)); w = 0.2
-fig, ax = plt.subplots(figsize=(12.5, 4.8))
-ax.bar(x - 1.5*w, [dl_act[b] for b in dl_order], w, label="Gerçek RUL", color=C["actual"])
-ax.bar(x - 0.5*w, [dl_pred["GRU"][b] for b in dl_order], w, label="GRU", color=C["gru"])
-ax.bar(x + 0.5*w, [dl_pred["TCN"][b] for b in dl_order], w, label="TCN", color=C["tcn"])
-ax.bar(x + 1.5*w, [dl_pred["raw-TCN"][b] for b in dl_order], w, label="TCN (ham)", color=C["rawtcn"])
-ax.set_xticks(x); ax.set_xticklabels(dl_order)
-ax.set_xlabel("Test rulmanı"); ax.set_ylabel("RUL (dk)")
-ax.set_title("Derin Öğrenme Modelleri — Rulman-Başına RUL: Gerçek vs Tahmin")
-ax.legend(loc="upper right", ncol=2)
-save(fig, "gorsel_dl_rulman_tahmin.png"); plt.show()''')
+code('''# Tahminler npz'den TÜRETİLİR (Şekil E/I ile aynı kayıtlı koşu → tutarlı)
+TBP = BASE/"experiments"/"results"/"track_b_predictions.npz"
+resB = pd.read_csv(BASE/"experiments"/"results"/"track_b_results.csv").set_index("model")
+def _rul(hi, t, ts, gamma):
+    h = np.clip(hi, 1e-6, 1)**gamma
+    hs = pd.Series(h).ewm(span=20, adjust=False).mean().values; hl = max(hs[-1], 1e-3)
+    return float(np.clip(((t[-1]-ts)/60.0)*(1-hl)/hl, 0, 125.0))
+if not TBP.exists():
+    print("⏳ track_b_predictions.npz yok — Şekil F atlandı (Colab/Track B çıktısını koy).")
+else:
+    d = np.load(TBP, allow_pickle=True)
+    dl_order = ["1_3","1_4","1_5","1_6","1_7","2_3","2_4","2_5","2_6","2_7","3_3"]
+    models = [("GRU", C["gru"]), ("TCN", C["tcn"]), ("raw-TCN", C["rawtcn"])]
+    act = {}; pred = {m: {} for m, _ in models}
+    for b, g in TE.groupby("bearing"):
+        g = g.sort_values("time_s"); bb = b.replace("Bearing", "")
+        act[bb] = float(np.clip((g["time_s"]+g["rul_s"]).max()/60 - g["time_s"].iloc[-1]/60, 0, 125.0))
+        for m, _ in models:
+            k = f"{m}__{b}"; gm = float(resB.loc[m, "gamma"]) if m in resB.index else 0.7
+            pred[m][bb] = _rul(np.asarray(d[k], float), g["time_s"].values, g["t_star_s"].iloc[0], gm) if k in d.files else np.nan
+    x = np.arange(len(dl_order)); w = 0.2
+    fig, ax = plt.subplots(figsize=(12.5, 4.8))
+    ax.bar(x - 1.5*w, [act[b] for b in dl_order], w, label="Gerçek RUL", color=C["actual"])
+    ax.bar(x - 0.5*w, [pred["GRU"][b] for b in dl_order], w, label="GRU", color=C["gru"])
+    ax.bar(x + 0.5*w, [pred["TCN"][b] for b in dl_order], w, label="TCN", color=C["tcn"])
+    ax.bar(x + 1.5*w, [pred["raw-TCN"][b] for b in dl_order], w, label="TCN (ham)", color=C["rawtcn"])
+    ax.set_xticks(x); ax.set_xticklabels(dl_order)
+    ax.set_xlabel("Test rulmanı"); ax.set_ylabel("RUL (dk)")
+    ax.set_title("Derin Öğrenme Modelleri — Rulman-Başına RUL: Gerçek vs Tahmin")
+    ax.legend(loc="upper right", ncol=2)
+    save(fig, "gorsel_dl_rulman_tahmin.png"); plt.show()''')
 
 # ── ŞEKİL I — DL HI trajektorileri (Colab predictions gelince otomatik) ──────────
 md("""## Şekil I — DL HI Trajektorileri: Gerçek vs Tahmin (4.2)
@@ -391,7 +402,8 @@ else:
             key = f"{m}__{b}"
             if key in d.files:
                 hp = np.asarray(d[key], float)
-                ax.plot(t[:len(hp)], hp, color=col, lw=1.5, label=DISP.get(m, m), alpha=0.9)
+                hp = pd.Series(hp).ewm(span=max(40, len(hp)//20), adjust=False).mean().values  # görünürlük için EMA
+                ax.plot(t[:len(hp)], hp, color=col, lw=1.7, label=DISP.get(m, m), alpha=0.9)
         ax.set_title(b.replace("Bearing", "Rulman "), fontsize=10); ax.set_ylim(-0.05, 1.05)
     for j in range(len(bs), len(axes)): axes[j].axis("off")
     axes[0].legend(fontsize=8, loc="upper left")
